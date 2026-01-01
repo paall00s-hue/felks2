@@ -1,0 +1,11 @@
+bin/
+obj/
+.vscode/
+*.user
+*.suo
+.bot_token
+accounts.json
+monitor_config.json
+temp/
+*.log
+Archive.zip
