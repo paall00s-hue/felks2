@@ -13,5 +13,6 @@ namespace TelegramBotController
     {
         public string Name { get; set; } = "";
         public string Command { get; set; } = "";
+        public string Id { get; set; } = ""; // Bot User ID
     }
 }

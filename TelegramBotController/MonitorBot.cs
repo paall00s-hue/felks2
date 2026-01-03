@@ -49,7 +49,7 @@ namespace TelegramBotController
         private string _targetGroupId = "0"; // Default invalid group
         private const string ConfigFileName = "monitor_config.json";
 
-        public virtual string Name => "👁️ المراقب";
+        public virtual string Name => "🦅 مراقبة المعززات";
         public virtual string Description => "مراقبة المعززات (صيد، صياد، ...) والمشاركة تلقائياً";
         public bool IsRunning => _isRunning;
         public int PlayCount => _playCount;
@@ -83,13 +83,18 @@ namespace TelegramBotController
                         if (configData.Phrases != null)
                         {
                             // Load Standard Bot Phrases
-                            foreach (var kvp in _knownBotIds)
+                            foreach (var phrase in configData.Phrases)
                             {
-                                var id = kvp.Key;
-                                var name = kvp.Value;
+                                string id = phrase.Id;
                                 
-                                var phrase = configData.Phrases.Find(p => p.Name == name);
-                                if (phrase != null)
+                                // Fallback to known IDs if not in config
+                                if (string.IsNullOrEmpty(id))
+                                {
+                                     var known = _knownBotIds.FirstOrDefault(x => x.Value == phrase.Name);
+                                     if (!string.IsNullOrEmpty(known.Key)) id = known.Key;
+                                }
+
+                                if (!string.IsNullOrEmpty(id))
                                 {
                                     _botConfigs[id] = new BotConfig { Name = phrase.Name, Command = phrase.Command };
                                     _monitoredSenders.Add(id);
@@ -383,13 +388,27 @@ namespace TelegramBotController
                     {
                         await item.Action();
                         
-                        if (_raceSession == null)
+                        bool needsDelay = false;
+                        string botName = "";
+                        
+                        if (_botConfigs.TryGetValue(item.SenderId, out var config))
                         {
-                            Console.WriteLine($"⏳ انتظار {_delaySeconds} ثواني قبل العملية التالية...");
+                            botName = config.Name;
+                            // Apply delay ONLY for specific bots
+                            if (botName == "صيد" || botName == "صياد" || botName == "اسرق" || botName == "بطل")
+                            {
+                                needsDelay = true;
+                            }
+                        }
+
+                        if (_raceSession == null && needsDelay)
+                        {
+                            Console.WriteLine($"⏳ انتظار {_delaySeconds} ثواني قبل العملية التالية ({botName})...");
                             await Task.Delay(_delaySeconds * 1000); 
                         }
                         else
                         {
+                            // Fast execution for others (Race, Time, Calc, Reverse, Write, etc.)
                             await Task.Delay(100);
                         }
                     }

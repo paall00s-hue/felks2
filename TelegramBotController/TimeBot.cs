@@ -20,7 +20,7 @@ namespace TelegramBotController
         private bool _isRunning;
         private int _playCount;
         
-        public string Name => "⏱️ بوت الوقت";
+        public string Name => "⏱️ وقت";
         public string Description => "يرسل كلمة {الان} بدقة عالية";
         public bool IsRunning => _isRunning;
         public int PlayCount => _playCount;

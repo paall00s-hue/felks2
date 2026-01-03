@@ -18,7 +18,7 @@ namespace TelegramBotController
         private bool _isRunning;
         private int _playCount;
         
-        public string Name => "🔄 بوت عكس الكلمات";
+        public string Name => "🔄 عكس";
         public string Description => "يعكس الكلمات العربية والإنجليزية";
         public bool IsRunning => _isRunning;
         public int PlayCount => _playCount;

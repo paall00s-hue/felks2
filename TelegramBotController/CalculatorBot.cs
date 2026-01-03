@@ -20,7 +20,7 @@ namespace TelegramBotController
         private int _playCount;
         private bool _waitingForRoundEnd;
         
-        public string Name => "🧮 بوت العمليات الحسابية";
+        public string Name => "🧮 أحسب";
         public string Description => "يحل العمليات الرياضية تلقائياً";
         public bool IsRunning => _isRunning;
         public int PlayCount => _playCount;

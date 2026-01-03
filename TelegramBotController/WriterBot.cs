@@ -18,7 +18,7 @@ namespace TelegramBotController
         private int _playCount;
         private readonly Regex _cleanPattern;
         
-        public string Name => "📝 بوت كتابة الكلمات";
+        public string Name => "📝 كتابة";
         public string Description => "ينظف الكلمات من الرموز ويرسلها";
         public bool IsRunning => _isRunning;
         public int PlayCount => _playCount;
