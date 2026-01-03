@@ -94,6 +94,7 @@ namespace TelegramBotController
                 // إرسال رسالة التأكيد عند الدخول
                 if (int.TryParse(_groupId, out _))
                 {
+                    await _client.JoinGroup(_groupId);
                     await _client.GroupMessage(_groupId, "!bw");
                     Console.WriteLine($"✅ {Name} - قناة: {_groupId} - نوع: عكس");
                 }

@@ -95,6 +95,7 @@ namespace TelegramBotController
                 // إرسال رسالة البداية عند التشغيل
                 if (int.TryParse(_groupId, out _))
                 {
+                    await _client.JoinGroup(_groupId);
                     await _client.GroupMessage(_groupId, "!كتابه");
                     Console.WriteLine($"✅ {Name} - قناة: {_groupId} - نوع: كتابة");
                 }

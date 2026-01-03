@@ -4,6 +4,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.IO;
+using Newtonsoft.Json;
 using WolfLive.Api;
 using WolfLive.Api.Models;
 
@@ -56,12 +58,47 @@ namespace TelegramBotController
                 if (!loginResult) throw new Exception("فشل تسجيل الدخول");
                 
                 // تثبيت المعرفات حسب طلب المستخدم
-                _groupId = groupId;
+                // _groupId = groupId; // Moved below
                 _targetUserId = targetUserId; // المعرف المطلوب مراقبته
+
+                // تحميل الإعدادات من الملف
+                string? configGroupId = null;
+                try
+                {
+                    if (File.Exists("monitor_config.json"))
+                    {
+                        var json = File.ReadAllText("monitor_config.json");
+                        var config = JsonConvert.DeserializeObject<MonitorConfigData>(json);
+                        if (config != null && !string.IsNullOrEmpty(config.TargetGroupId))
+                        {
+                            configGroupId = config.TargetGroupId;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"⚠️ فشل تحميل إعدادات المجموعة لـ {Name}: {ex.Message}");
+                }
+
+                if (!string.IsNullOrEmpty(configGroupId) && configGroupId != "0")
+                {
+                    _groupId = configGroupId;
+                }
+                else
+                {
+                    _groupId = groupId;
+                }
+
                 _isRunning = true;
                 
                 _client.Messaging.OnGroupMessage += HandleMessage;
                 
+                // التأكد من الانضمام للمجموعة أولاً
+                if (!string.IsNullOrEmpty(_groupId))
+                {
+                    await _client.JoinGroup(_groupId);
+                }
+
                 // إرسال رسالة البداية عند التشغيل
                 await _client.GroupMessage(_groupId, "!وقت");
 

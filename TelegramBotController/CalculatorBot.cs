@@ -84,6 +84,12 @@ namespace TelegramBotController
                 // تسجيل معالج الرسائل
                 _client.Messaging.OnGroupMessage += HandleMessage;
 
+                // التأكد من الانضمام للمجموعة أولاً
+                if (!string.IsNullOrEmpty(_groupId))
+                {
+                    await _client.JoinGroup(_groupId);
+                }
+
                 // إرسال رسالة التأكيد عند الدخول
                 await _client.GroupMessage(_groupId, "!احسب");
                 
