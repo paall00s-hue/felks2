@@ -848,7 +848,7 @@ namespace TelegramBotController
                 {
                     session.TempBotType = botType;
                     
-                    if (botType == "وقت" || botType == "كتابة" || botType == "عكس" || botType == "أحسب" || botType == "مراقبة")
+                    if (botType == "وقت" || botType == "كتابة" || botType == "عكس" || botType == "أحسب")
                     {
                         // Check if TargetGroupId exists in monitor_config.json
                         string? defaultGroupId = null;
