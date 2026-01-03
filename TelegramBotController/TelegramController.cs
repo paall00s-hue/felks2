@@ -302,6 +302,15 @@ namespace TelegramBotController
                         {
                             // Normal Mode
                             await _botClient.SendMessage(chatId, "✅ تم تسجيل الدخول بنجاح!");
+
+                            // التحقق من TargetGroupId في ملف الإعدادات
+                            if (MonitorBot.IsTargetGroupMissing())
+                            {
+                                await _botClient.SendMessage(chatId, "⚠️ لم يتم تحديد مجموعة المراقبة الأساسية.\n📂 الرجاء إدخال رقم المجموعة (Group ID) ليتم حفظها واعتمادها مستقبلاً:");
+                                session.State = SessionState.WaitingForMonitorGroupId;
+                                return;
+                            }
+
                             session.State = SessionState.WaitingForBotSelection;
                             await AskForBotSelection(chatId, session);
                         }
@@ -311,6 +320,21 @@ namespace TelegramBotController
                         await _botClient.SendMessage(chatId, $"❌ فشل تسجيل الدخول: {ex.Message}\nحاول مرة أخرى (أدخل البريد):");
                         session.State = SessionState.WaitingForEmail;
                     }
+                    break;
+
+                case SessionState.WaitingForMonitorGroupId:
+                    var monitorGroupId = message.Text.Trim();
+                    MonitorBot.UpdateTargetGroupId(monitorGroupId);
+                    await _botClient.SendMessage(chatId, $"✅ تم حفظ مجموعة المراقبة: {monitorGroupId}");
+                    
+                    // تحديث البوت الحالي بالانضمام للمجموعة الجديدة
+                    if (!string.IsNullOrEmpty(session.ActiveBotId))
+                    {
+                        await _botManager.JoinGroup(session.ActiveBotId, monitorGroupId);
+                    }
+
+                    session.State = SessionState.WaitingForBotSelection;
+                    await AskForBotSelection(chatId, session);
                     break;
 
                 case SessionState.WaitingForBotSelection:
@@ -332,6 +356,27 @@ namespace TelegramBotController
 
                 case SessionState.Acc_Add_Group:
                     session.TempGroupId = message.Text?.Trim();
+
+                    // حفظ رقم المجموعة في monitor_config.json إذا كان البوت من الأنواع التي تستخدمه
+                    var monitorTypes = new[] { "وقت", "كتابة", "عكس", "أحسب", "سباق", "مراقبة" };
+                    if (!string.IsNullOrEmpty(session.TempBotType) && monitorTypes.Contains(session.TempBotType))
+                    {
+                        MonitorBot.UpdateTargetGroupId(session.TempGroupId);
+                        await _botClient.SendMessage(chatId, $"✅ تم حفظ رقم المجموعة {session.TempGroupId} في الإعدادات للاستخدام المستقبلي.");
+                    }
+
+                    // استكمال إعداد بوت السباق
+                    if (session.TempBotType == "سباق")
+                    {
+                        var roundsKeyboard = new InlineKeyboardMarkup(new[]
+                        {
+                            new[] { InlineKeyboardButton.WithCallbackData("1", "pre_race_rounds_1"), InlineKeyboardButton.WithCallbackData("2", "pre_race_rounds_2"), InlineKeyboardButton.WithCallbackData("3", "pre_race_rounds_3") },
+                            new[] { InlineKeyboardButton.WithCallbackData("4", "pre_race_rounds_4"), InlineKeyboardButton.WithCallbackData("5", "pre_race_rounds_5") }
+                        });
+                        await _botClient.SendMessage(chatId, "🏁 اختر عدد الجولات:", replyMarkup: roundsKeyboard);
+                        return;
+                    }
+
                     // إذا كان البوت هو "وقت"، نحتاج معرف الهدف
                     if (session.TempBotType == "وقت")
                     {
@@ -496,13 +541,6 @@ namespace TelegramBotController
                                      var deleteResult = await _botManager.StartAutoDelete(session.ActiveBotId, session.TempGroupId, targetIds, delay.Value);
                                      await _botClient.SendMessage(chatId, deleteResult);
 
-                                     if (deleteResult.Contains("فشل الانضمام"))
-                                     {
-                                         await _botClient.SendMessage(chatId, "🔄 الرجاء إدخال رقم المجموعة (Group ID) مرة أخرى للمحاولة:");
-                                         session.State = SessionState.WaitingForDeleteGroupId;
-                                         return;
-                                     }
-
                                      session.State = SessionState.Start;
                                      session.Mode = WorkMode.Normal;
                                      await ShowStartMenu(chatId);
@@ -572,13 +610,6 @@ namespace TelegramBotController
 
                         var deleteResult = await _botManager.StartAutoDelete(session.ActiveBotId, deleteGroupId, deleteTargetId, delaySeconds);
                         await _botClient.SendMessage(chatId, deleteResult);
-
-                        if (deleteResult.Contains("فشل الانضمام"))
-                        {
-                            await _botClient.SendMessage(chatId, "🔄 الرجاء إدخال رقم المجموعة (Group ID) مرة أخرى للمحاولة:");
-                            session.State = SessionState.WaitingForDeleteGroupId;
-                            return;
-                        }
 
                         session.State = SessionState.Start;
                         session.Mode = WorkMode.Normal;
@@ -696,22 +727,30 @@ namespace TelegramBotController
                     if (System.IO.File.Exists("monitor_config.json"))
                     {
                         var json = System.IO.File.ReadAllText("monitor_config.json");
-                        var config = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(json);
-                        defaultGroupId = config?.TargetGroupId;
+                        var config = Newtonsoft.Json.JsonConvert.DeserializeObject<MonitorConfigData>(json);
+                        if (config != null && !string.IsNullOrEmpty(config.TargetGroupId) && config.TargetGroupId != "0")
+                        {
+                            defaultGroupId = config.TargetGroupId;
+                        }
                     }
                 }
                 catch { }
 
-                if (string.IsNullOrEmpty(defaultGroupId))
-                {
-                     await _botClient.SendMessage(chatId, "❌ يجب تحديد معرف مجموعة السباق في ملف monitor_config.json أولاً.");
-                }
-
                 if (session.State == SessionState.Acc_Add_Type)
                 {
                     session.TempBotType = "سباق";
-                    session.TempGroupId = defaultGroupId ?? "0";
-                    session.TempTargetUserId = "0";
+                    
+                    if (!string.IsNullOrEmpty(defaultGroupId))
+                    {
+                        session.TempGroupId = defaultGroupId;
+                        session.TempTargetUserId = "0";
+                    }
+                    else
+                    {
+                        await _botClient.SendMessage(chatId, "🏁 أدخل معرف مجموعة السباق (Group ID):");
+                        session.State = SessionState.Acc_Add_Group;
+                        return;
+                    }
                 }
                 else
                 {
@@ -809,7 +848,7 @@ namespace TelegramBotController
                 {
                     session.TempBotType = botType;
                     
-                    if (botType == "وقت" || botType == "كتابة" || botType == "عكس" || botType == "أحسب")
+                    if (botType == "وقت" || botType == "كتابة" || botType == "عكس" || botType == "أحسب" || botType == "مراقبة")
                     {
                         // Check if TargetGroupId exists in monitor_config.json
                         string? defaultGroupId = null;
@@ -818,8 +857,11 @@ namespace TelegramBotController
                             if (System.IO.File.Exists("monitor_config.json"))
                             {
                                 var json = System.IO.File.ReadAllText("monitor_config.json");
-                                var config = Newtonsoft.Json.JsonConvert.DeserializeObject<dynamic>(json);
-                                defaultGroupId = config?.TargetGroupId;
+                                var config = Newtonsoft.Json.JsonConvert.DeserializeObject<MonitorConfigData>(json);
+                                if (config != null && !string.IsNullOrEmpty(config.TargetGroupId) && config.TargetGroupId != "0")
+                                {
+                                    defaultGroupId = config.TargetGroupId;
+                                }
                             }
                         }
                         catch { }
@@ -828,6 +870,7 @@ namespace TelegramBotController
                         {
                              session.TempGroupId = defaultGroupId;
                              
+                             // If Time bot, ask for target user
                              if (botType == "وقت")
                              {
                                  session.TempTargetUserId = "26494626";
@@ -841,8 +884,8 @@ namespace TelegramBotController
                         }
                         else
                         {
-                            await _botClient.SendMessage(chatId, "📂 أدخل معرف المجموعة (Group ID):");
-                            session.State = SessionState.Acc_Add_Group;
+                             await _botClient.SendMessage(chatId, "👥 أرسل رقم المجموعة (Group ID):");
+                             session.State = SessionState.Acc_Add_Group;
                         }
                     }
                     else
@@ -1452,7 +1495,10 @@ namespace TelegramBotController
             // Admin States
             WaitingForDeleteGroupId,
             WaitingForDeleteUserId,
-            WaitingForDeleteDelay
+            WaitingForDeleteDelay,
+            
+            // Monitor Config
+            WaitingForMonitorGroupId
         }
     }
 }

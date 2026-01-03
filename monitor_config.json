@@ -1,0 +1,30 @@
+{
+  "DelaySeconds": 10,
+  "Phrases": [
+    {
+      "Name": "صياد",
+      "Command": "!صياد 3"
+    },
+    {
+      "Name": "صيد",
+      "Command": "!صيد 3"
+    },
+    {
+      "Name": "اسرق",
+      "Command": "!اسرق 5"
+    },
+    {
+      "Name": "بطل",
+      "Command": "!بطل 5"
+    },
+    {
+      "Name": "سباق_طاقة",
+      "Command": "!س طاقه"
+    },
+    {
+      "Name": "سباق_جلد",
+      "Command": "!س جلد"
+    }
+  ],
+  "TargetGroupId": "0"
+}

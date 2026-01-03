@@ -66,25 +66,9 @@ namespace TelegramBotController
             }
         }
         
-        public async Task<string> StartBot(string email, string password)
+        public Task<string> StartBot(string email, string password)
         {
-            // إنشاء بوت مراقبة افتراضي للعمليات الإدارية
-            string botType = "مراقبة";
-            // استخدمنا admin سابقاً، لكن هذا يسبب مشكلة لأن البوت يسجل باسم admin وليس بمعرف المستخدم الحقيقي
-            // ولذلك لا يظهر في قائمة GetUserBots(userId)
-            // سنستخدم معرف مؤقت ولكن يجب تحديثه لاحقاً أو تمريره كمعامل
-            // الحل الأفضل: إضافة معامل telegramUserId لهذه الدالة
-            // ولكن لتجنب كسر الكود القديم، سنبحث عن طريقة أخرى أو نعتمد على StartBot الكاملة
-            // بما أن هذا الاستدعاء يأتي من TelegramController، يمكننا تمرير المعرف
-            
-            // للتوافق السريع: سنفترض أن المستخدم يريد فقط التحقق من الحساب
-            // ولكن المشكلة أن البوت يضاف لقائمة activeBots بمعرف admin
-            
-            // تصحيح: يجب أن نستخدم معرف المستخدم الفعلي. بما أننا لا نملكه هنا،
-            // سنقوم بتعديل TelegramController لاستخدام الدالة الأخرى أو تعديل هذه الدالة.
-            // الخيار الأسهل: تعديل هذه الدالة لتقبل telegramUserId
-            
-            throw new InvalidOperationException("Use the overload with telegramUserId instead.");
+            return Task.FromException<string>(new InvalidOperationException("Use the overload with telegramUserId instead."));
         }
 
         public async Task<string> StartBot(string email, string password, string telegramUserId)
@@ -413,77 +397,6 @@ namespace TelegramBotController
             if (!isMember)
                 return "❌ فشل الانضمام للمجموعة (قد تكون مغلقة أو البوت محظور).";
 
-            // قراءة إعدادات الرسائل من ملف JSON
-            string? spamMsg = null;
-            string? adminMsg = null;
-
-            try 
-            {
-                if (File.Exists("auto_delete_config.json"))
-                {
-                    var json = File.ReadAllText("auto_delete_config.json", System.Text.Encoding.UTF8);
-                    dynamic config = JsonConvert.DeserializeObject(json);
-                    // استخدام القيم من الملف إذا وجدت، وإلا الاحتفاظ بالافتراضي
-                    if (config?.SpamMessage != null) spamMsg = config.SpamMessage;
-                    if (config?.AdminSuccessMessage != null) adminMsg = config.AdminSuccessMessage;
-                }
-            }
-            catch {}
-
-            // 2. إرسال رسالة "انا بوت حذف..." 3 مرات (مهمة خلفية)
-            _ = Task.Run(async () => 
-            {
-                try 
-                {
-                    if (!string.IsNullOrEmpty(spamMsg))
-                    {
-                        for(int i=0; i<3; i++)
-                        {
-                            await bot.Client.GroupMessage(targetGroupId, spamMsg);
-                            await Task.Delay(1500); // فاصل زمني قصير
-                        }
-                    }
-                }
-                catch {}
-            });
-
-            // 3. مراقبة صلاحيات الأدمن وإرسال الشكر (مهمة خلفية)
-            _ = Task.Run(async () => 
-            {
-                int checks = 0;
-                // المحاولة لمدة ساعة تقريباً (360 محاولة * 10 ثواني)
-                while(checks < 360) 
-                {
-                    try
-                    {
-                        await Task.Delay(10000); // فحص كل 10 ثواني
-                        checks++;
-
-                        var me = bot.Client.CurrentUser();
-                        if (me == null) continue;
-
-                        // جلب بيانات العضو في المجموعة للتأكد من الصلاحيات
-                        var groupUsers = await bot.Client.GetGroupUsers(targetGroupId, me.Id.ToString());
-                        var groupUser = groupUsers?.FirstOrDefault();
-                        
-                        // (int)GroupUserType.User = 0, Admin/Mod/Owner > 0
-                        if (groupUser != null && (int)groupUser.Capabilities > 0) 
-                        {
-                            // أصبح أدمن!
-                            if (!string.IsNullOrEmpty(adminMsg))
-                            {
-                                await bot.Client.GroupMessage(targetGroupId, adminMsg);
-                            }
-                            break; // إنهاء الحلقة
-                        }
-                    }
-                    catch 
-                    {
-                        // تجاهل الأخطاء في الخلفية
-                    }
-                }
-            });
-
             // 4. تفعيل معالج الحذف (Logic as before)
             // تقسيم معرفات المستخدمين المستهدفين (يدعم التعدد)
             var targetUserIds = targetUserId.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries).ToHashSet();
@@ -536,6 +449,14 @@ namespace TelegramBotController
                 }
             }
             return "⚠️ لم يتم تفعيل الحذف مسبقاً.";
+        }
+
+        public async Task JoinGroup(string botId, string groupId)
+        {
+            if (_activeBots.TryGetValue(botId, out var bot))
+            {
+                await bot.JoinGroupAsync(groupId);
+            }
         }
 
         public void Dispose()

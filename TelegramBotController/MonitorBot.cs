@@ -46,6 +46,7 @@ namespace TelegramBotController
         // Configuration
         private Dictionary<string, BotConfig> _botConfigs = new Dictionary<string, BotConfig>();
         private int _delaySeconds = 10; // Default delay
+        private string _targetGroupId = "0"; // Default invalid group
         private const string ConfigFileName = "monitor_config.json";
 
         public virtual string Name => "👁️ المراقب";
@@ -74,6 +75,7 @@ namespace TelegramBotController
                     if (configData != null)
                     {
                         _delaySeconds = configData.DelaySeconds > 0 ? configData.DelaySeconds : 10;
+                        _targetGroupId = !string.IsNullOrEmpty(configData.TargetGroupId) ? configData.TargetGroupId : "0";
                         
                         _botConfigs.Clear();
                         _monitoredSenders.Clear();
@@ -97,105 +99,134 @@ namespace TelegramBotController
                             // Load Race Phrases
                             var raceEnergy = configData.Phrases.Find(p => p.Name == "سباق_طاقة");
                             if (raceEnergy != null) _cmdRaceEnergy = raceEnergy.Command;
-
                             var raceGrind = configData.Phrases.Find(p => p.Name == "سباق_جلد");
                             if (raceGrind != null) _cmdRaceGrind = raceGrind.Command;
                         }
                     }
                 }
-                else
-                {
-                    SaveDefaultConfig();
-                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"❌ خطأ في تحميل ملف الإعدادات: {ex.Message}");
-            }
-
-            if (_botConfigs.Count == 0)
-            {
-                foreach (var kvp in _knownBotIds)
-                {
-                    var id = kvp.Key;
-                    var name = kvp.Value;
-                    string defaultCommand = "!صياد 3";
-                    
-                    if (name == "صيد") defaultCommand = "!صياد جنوبية ٣";
-                    else if (name == "اسرق") defaultCommand = "!اسرق 5";
-                    else if (name == "بطل") defaultCommand = "!بطل 5";
-                    
-                    _botConfigs[id] = new BotConfig { Name = name, Command = defaultCommand };
-                    _monitoredSenders.Add(id);
-                }
+                Console.WriteLine($"Error loading config: {ex.Message}");
             }
         }
-
-        private void SaveDefaultConfig()
+        
+        // Helper to update config
+        public static void UpdateTargetGroupId(string newGroupId)
         {
             try
             {
-                var data = new MonitorConfigData
+                MonitorConfigData configData;
+                if (File.Exists(ConfigFileName))
                 {
-                    DelaySeconds = 10,
-                    Phrases = new List<PhraseConfig>
-                    {
-                        new PhraseConfig { Name = "صياد", Command = "!صياد 3" },
-                        new PhraseConfig { Name = "صيد", Command = "!صياد جنوبية ٣" },
-                        new PhraseConfig { Name = "اسرق", Command = "!اسرق 5" },
-                        new PhraseConfig { Name = "بطل", Command = "!بطل 5" }
-                    }
-                };
-                
-                File.WriteAllText(ConfigFileName, JsonConvert.SerializeObject(data, Formatting.Indented));
+                    string json = File.ReadAllText(ConfigFileName);
+                    configData = JsonConvert.DeserializeObject<MonitorConfigData>(json) ?? new MonitorConfigData();
+                }
+                else
+                {
+                    configData = new MonitorConfigData();
+                }
+
+                configData.TargetGroupId = newGroupId;
+
+                string output = JsonConvert.SerializeObject(configData, Formatting.Indented);
+                File.WriteAllText(ConfigFileName, output);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error saving config: {ex.Message}");
+            }
+        }
+        
+        // Helper to check if Target Group ID is missing or invalid
+        public static bool IsTargetGroupMissing()
+        {
+            try
+            {
+                if (File.Exists(ConfigFileName))
+                {
+                    string json = File.ReadAllText(ConfigFileName);
+                    var configData = JsonConvert.DeserializeObject<MonitorConfigData>(json);
+                    
+                    if (configData != null && !string.IsNullOrEmpty(configData.TargetGroupId) && configData.TargetGroupId != "0")
+                    {
+                        return false;
+                    }
+                }
+                return true;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         public async Task StartAsync(string email, string password, string groupId, string targetUserId)
         {
-            if (_isRunning) return;
+            _client = new WolfClient();
+            await _client.Login(email, password);
+            
+            await StartAsync(email, password, _client);
+            
+            // If groupId is explicitly provided (and not "0"), use it
+            if (!string.IsNullOrEmpty(groupId) && groupId != "0")
+            {
+                _targetGroupId = groupId;
+                await _client.JoinGroup(_targetGroupId);
+            }
+        }
+        
+        
+        private void OnGroupMessage(IWolfClient client, Message msg, GroupUser user)
+        {
+            if (!_isRunning) return;
 
+            // Race Logic
+            if (_raceSession != null)
+            {
+                 _raceSession.HandleGroupMessage(msg);
+            }
+
+            ProcessMessageContent(msg.Content, msg.UserId, msg.IsGroup);
+        }
+
+        private void OnPrivateMessage(IWolfClient client, Message msg, User user)
+        {
+             if (!_isRunning) return;
+
+             // Delegate to Race Session if active and message is from Race Bot
+             if (_raceSession != null && msg.UserId == RaceBotId)
+             {
+                 _raceSession.HandlePrivateMessage(msg.Content);
+                 return;
+             }
+
+             ProcessMessageContent(msg.Content, msg.UserId, msg.IsGroup);
+        }
+
+        public async Task StartAsync(string email, string password, WolfClient client)
+        {
+            _client = client;
+            
+            // Re-load config to ensure fresh data
             LoadConfiguration();
 
-            try
+            _isRunning = true;
+            _processedMessages.Clear();
+
+            _client.Messaging.OnGroupMessage += OnGroupMessage;
+            _client.Messaging.OnPrivateMessage += OnPrivateMessage;
+
+            // Start processing queue
+            _ = Task.Run(ProcessQueue);
+            
+            // Join target group if set
+            if (_targetGroupId != "0" && !string.IsNullOrEmpty(_targetGroupId))
             {
-                _client = new WolfClient();
-                var loginResult = await _client.Login(email, password);
-                if (!loginResult) throw new Exception("فشل تسجيل الدخول");
-
-                _isRunning = true;
-
-                if (!string.IsNullOrEmpty(groupId) && groupId != "0")
-                {
-                    _ = Task.Run(async () => 
-                    {
-                        try 
-                        {
-                            if (int.TryParse(groupId, out int gid))
-                                await _client.Emit(new Packet("group join", new { id = gid, password = "" }));
-                        }
-                        catch { }
-                    });
-                }
-                
-                try 
-                {
-                    _client.On<WolfMessage>("message send", OnMessageReceived);
-                }
-                catch
-                {
-                     _client.Messaging.OnPrivateMessage += HandlePrivateMessage;
-                }
-
-                _ = Task.Run(ProcessQueue);
-
-                Console.WriteLine($"✅ {Name} - جاهز للعمل");
+                await _client.JoinGroup(_targetGroupId);
             }
-            catch (Exception ex)
-            {
-                throw new Exception($"فشل بدء {Name}: {ex.Message}");
-            }
+
+            OnLog?.Invoke($"Monitor Bot Started for {email}");
         }
 
         public async Task StopAsync()
@@ -270,49 +301,7 @@ namespace TelegramBotController
             ProcessMessageContent(content, userId, false);
         }
         
-        private void HandlePrivateMessage(IWolfClient client, Message message, User user)
-        {
-             if (!_isRunning) return;
 
-             // Delegate to Race Session if active and message is from Race Bot
-             if (_raceSession != null && message.UserId == RaceBotId)
-             {
-                 _raceSession.HandlePrivateMessage(message.Content);
-                 return;
-             }
-
-             ProcessMessageContent(message.Content, message.UserId, message.IsGroup);
-        }
-
-        private void OnMessageReceived(WolfMessage wolfMsg)
-        {
-            if (!_isRunning) return;
-            
-            try 
-            {
-                var msg = new Message(wolfMsg);
-
-                // Race Logic
-                if (_raceSession != null)
-                {
-                    if (msg.IsGroup)
-                    {
-                        _raceSession.HandleGroupMessage(msg);
-                    }
-                    else if (msg.UserId == RaceBotId)
-                    {
-                        _raceSession.HandlePrivateMessage(msg.Content);
-                        return; // Don't process monitor logic for Race Bot PMs
-                    }
-                }
-
-                ProcessMessageContent(msg.Content, msg.UserId, msg.IsGroup);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error converting message: {ex.Message}");
-            }
-        }
 
         private void ProcessMessageContent(string content, string userId, bool isGroup)
         {
