@@ -24,6 +24,11 @@ namespace TelegramBotController
         public int PlayCount => _playCount;
         public IWolfClient? Client => _client;
         public event Action<string>? OnLog;
+
+        private void Log(string message)
+        {
+            OnLog?.Invoke(message);
+        }
         
         public ReverseBot()
         {
@@ -67,6 +72,19 @@ namespace TelegramBotController
                     Console.WriteLine($"⚠️ فشل تحميل إعدادات المجموعة لـ {Name}: {ex.Message}");
                 }
 
+                if (string.IsNullOrEmpty(_groupId))
+                {
+                    if (!string.IsNullOrEmpty(groupId) && groupId != "0")
+                    {
+                        _groupId = groupId;
+                    }
+                    else
+                    {
+                        // Fallback logic or error if no group ID is found
+                        _groupId = "18822804"; // Default fallback
+                    }
+                }
+
                 _targetUserId = "75423789";
 
                 _isRunning = true;
@@ -74,9 +92,15 @@ namespace TelegramBotController
                 _client.Messaging.OnGroupMessage += HandleMessage;
 
                 // إرسال رسالة التأكيد عند الدخول
-                await _client.GroupMessage(_groupId, "!bw");
-                
-                Console.WriteLine($"✅ {Name} - قناة: {_groupId} - نوع: عكس");
+                if (int.TryParse(_groupId, out _))
+                {
+                    await _client.GroupMessage(_groupId, "!bw");
+                    Console.WriteLine($"✅ {Name} - قناة: {_groupId} - نوع: عكس");
+                }
+                else
+                {
+                    Console.WriteLine($"⚠️ {Name} - معرف المجموعة غير صالح: {_groupId}");
+                }
             }
             catch (Exception ex)
             {
@@ -144,7 +168,15 @@ namespace TelegramBotController
             
             try
             {
-                await _client.Connection.DisconnectAsync();
+                 // محاولة تسجيل خروج نظامي قبل قطع الاتصال
+                 await _client.Emit(new Packet("private logout", null));
+                 await Task.Delay(500);
+            }
+            catch { }
+            
+            try 
+            {
+                 await _client.Connection.DisconnectAsync();
             }
             catch { }
             

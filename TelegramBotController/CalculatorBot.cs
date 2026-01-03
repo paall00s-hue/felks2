@@ -26,6 +26,12 @@ namespace TelegramBotController
         public int PlayCount => _playCount;
         public IWolfClient? Client => _client;
         public event Action<string>? OnLog;
+
+        // دالة مساعدة لاستدعاء الحدث لتجنب التحذير CS0067
+        protected virtual void Log(string message)
+        {
+            OnLog?.Invoke(message);
+        }
         
         public CalculatorBot()
         {
@@ -299,7 +305,15 @@ namespace TelegramBotController
             
             try
             {
-                await _client.Connection.DisconnectAsync();
+                 // محاولة تسجيل خروج نظامي قبل قطع الاتصال
+                 await _client.Emit(new Packet("private logout", null));
+                 await Task.Delay(500);
+            }
+            catch { }
+            
+            try 
+            {
+                 await _client.Connection.DisconnectAsync();
             }
             catch { }
             

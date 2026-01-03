@@ -5,8 +5,8 @@ namespace TelegramBotController
 {
     public class RaceBot : MonitorBot
     {
-        public new string Name => "🏎️ بوت السباق";
-        public new string Description => "بوت متخصص في سباقات ولف";
+        public override string Name => "🐎 بووت الخيل";
+        public override string Description => "بوت متخصص في سباقات ولف";
 
         public RaceBot() : base()
         {

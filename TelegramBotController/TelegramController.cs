@@ -20,22 +20,40 @@ namespace TelegramBotController
         private readonly ConcurrentDictionary<long, UserSession> _userSessions;
         private readonly CancellationTokenSource _cts;
         private bool _isDisposed;
+        private readonly DateTime _startTime;
         
-        public TelegramController(string botToken)
+        public TelegramController(BotManager botManager)
         {
-            _botClient = new TelegramBotClient(botToken);
-            _botManager = new BotManager();
+            _startTime = DateTime.UtcNow;
+            // Read token from file - support multiple locations
+            string token = "";
+            if (File.Exists(".bot_token")) token = File.ReadAllText(".bot_token").Trim();
+            else if (File.Exists("../.bot_token")) token = File.ReadAllText("../.bot_token").Trim();
+            else if (File.Exists("TelegramBotController/.bot_token")) token = File.ReadAllText("TelegramBotController/.bot_token").Trim();
+
+            _botManager = botManager;
             _userSessions = new ConcurrentDictionary<long, UserSession>();
             _cts = new CancellationTokenSource();
             
             _botManager.OnBotEvent += HandleBotEvent;
             _botManager.OnNotification += HandleNotification;
-            
-            Console.WriteLine("🤖 بوت التليجرام جاهز");
+
+            if (string.IsNullOrEmpty(token))
+            {
+                Console.WriteLine("⚠️ لم يتم العثور على ملف .bot_token - سيتم تعطيل واجهة تليجرام");
+                _botClient = null;
+            }
+            else
+            {
+                _botClient = new TelegramBotClient(token);
+                Console.WriteLine("🤖 بوت التليجرام جاهز");
+            }
         }
         
         public async Task StartAsync()
         {
+            if (_botClient == null) return;
+
             var receiverOptions = new ReceiverOptions
             {
                 AllowedUpdates = Array.Empty<UpdateType>()
@@ -102,6 +120,12 @@ namespace TelegramBotController
         
         private async Task HandleMessageAsync(Message message)
         {
+            // تجاهل الرسائل القديمة (التي تم إرسالها قبل تشغيل البوت) لتجنب تكرار العمليات عند إعادة التشغيل
+            if (message.Date < _startTime) 
+            {
+                return;
+            }
+
             var chatId = message.Chat.Id;
             var userId = message.From.Id;
             
@@ -116,6 +140,135 @@ namespace TelegramBotController
             {
                 session.State = SessionState.Start;
                 await ShowStartMenu(chatId);
+                return;
+            }
+
+            // أمر إيقاف جميع البوتات النشطة وعرض تقرير
+            if (message.Text?.Trim().Equals("/stop", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                var activeBots = _botManager.GetUserBots(userId.ToString());
+                if (activeBots.Count == 0)
+                {
+                    await _botClient.SendMessage(chatId, "⚠️ لا توجد بوتات نشطة حالياً لإيقافها.");
+                    return;
+                }
+
+                var sb = new System.Text.StringBuilder();
+                sb.AppendLine("🛑 **تم إيقاف البوتات التالية:**");
+                sb.AppendLine("");
+                
+                foreach (var bot in activeBots)
+                {
+                    string account = !string.IsNullOrEmpty(bot.Email) ? bot.Email : "غير معروف";
+                    sb.AppendLine($"👤 **الحساب:** `{account}`");
+                    sb.AppendLine($"🤖 **النوع:** {bot.BotType}");
+                    sb.AppendLine("➖ ➖ ➖ ➖ ➖");
+                }
+
+                await _botManager.StopAllBots(userId.ToString());
+                await _botClient.SendMessage(chatId, sb.ToString(), parseMode: ParseMode.Markdown);
+                return;
+            }
+
+            // أمر إعادة التشغيل الكامل للنظام (Restart)
+            if (message.Text?.Trim().Equals("/saud", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                await _botClient.SendMessage(chatId, "♻️ **جاري إغلاق النظام وتنظيف العمليات وإعادة التشغيل...**", parseMode: ParseMode.Markdown);
+                
+                try
+                {
+                    // تشغيل ملف run.bat في نافذة جديدة
+                    // المسار الحالي يكون عادة داخل bin/Debug/net9.0، ونحتاج للصعود 4 مستويات للوصول للمجلد الرئيسي
+                    // أو استخدام مسار نسبي مباشر إذا كان run.bat في مجلد المشروع الرئيسي
+                    
+                    // الحل الأفضل: البحث عن run.bat في المجلدات الأعلى
+                    string currentDir = AppDomain.CurrentDomain.BaseDirectory;
+                    string runBatPath = Path.Combine(currentDir, "run.bat");
+                    
+                    if (!File.Exists(runBatPath))
+                    {
+                         // المحاولة في المجلد الأب (مشروع)
+                         string parent1 = Directory.GetParent(currentDir)?.FullName ?? "";
+                         string parent2 = Directory.GetParent(parent1)?.FullName ?? "";
+                         string parent3 = Directory.GetParent(parent2)?.FullName ?? "";
+                         string parent4 = Directory.GetParent(parent3)?.FullName ?? ""; // Project Root usually
+                         
+                         if (File.Exists(Path.Combine(parent4, "run.bat")))
+                            runBatPath = Path.Combine(parent4, "run.bat");
+                         else if (File.Exists(Path.Combine(parent3, "run.bat")))
+                            runBatPath = Path.Combine(parent3, "run.bat");
+                         else 
+                            runBatPath = @"C:\Users\saud\Desktop\البوت كامل من صتعي\run.bat"; // Fallback to absolute path known from context
+                    }
+
+                    var psi = new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = runBatPath,
+                        UseShellExecute = true,
+                        WorkingDirectory = Path.GetDirectoryName(runBatPath)
+                    };
+                    System.Diagnostics.Process.Start(psi);
+                    
+                    // الانتظار قليلاً لضمان إرسال الرسالة وتحديث الحالة
+                    await Task.Delay(2000);
+                    
+                    // إغلاق التطبيق الحالي
+                    Environment.Exit(0);
+                }
+                catch (Exception ex)
+                {
+                    await _botClient.SendMessage(chatId, $"❌ حدث خطأ أثناء إعادة التشغيل: {ex.Message}");
+                }
+                return;
+            }
+
+            // معالجة أمر إيقاف الحذف التلقائي
+            if (message.Text?.Trim().Equals("/stop dl", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                // البحث عن بوت الحذف التلقائي النشط
+                var bots = _botManager.GetUserBots(userId.ToString());
+                // بوت الحذف هو عادة بوت مراقبة أو أي بوت تم تفعيل الحذف عليه
+                // سنبحث عن البوت الذي لديه معالج حذف فعال
+                string? targetBotId = null;
+                
+                foreach (var bot in bots)
+                {
+                    // للتحقق مما إذا كان البوت لديه حذف فعال، نحاول إيقافه
+                    // الدالة StopAutoDelete ترجع رسالة نجاح إذا كان فعالاً
+                    // لكننا نريد التحقق أولاً أو الاعتماد على StopAutoDelete
+                    // وبما أننا نريد تسجيل خروج أيضاً، سنقوم بالبحث عن البوت الذي تم تفعيل الحذف عليه
+                    // حالياً BotManager لا يوفر طريقة مباشرة لمعرفة البوتات التي لديها حذف فعال بدون إيقافه
+                    // لذا سنفترض أن المستخدم يريد إيقاف البوت الذي يعمل عليه الحذف
+                    
+                    // سنقوم بالتحقق من خلال محاولة إيقاف الحذف، إذا نجح يعني أنه كان فعالاً
+                    string result = _botManager.StopAutoDelete(bot.BotId);
+                    if (result.Contains("تم إيقاف"))
+                    {
+                        targetBotId = bot.BotId;
+                        break;
+                    }
+                }
+                
+                if (targetBotId != null)
+                {
+                    // تم العثور على بوت حذف فعال وإيقاف الحذف
+                    // الآن نقوم بتسجيل الخروج من هذا البوت
+                    await _botManager.StopBot(targetBotId);
+                    
+                    session.State = SessionState.WaitingForDeleteGroupId;
+                    session.Mode = WorkMode.DeleteMessages;
+
+                    var keyboard = new InlineKeyboardMarkup(new[]
+                    {
+                        new[] { InlineKeyboardButton.WithCallbackData("📋 عرض الحسابات المتصلة", "list_active") }
+                    });
+
+                    await _botClient.SendMessage(chatId, "✅ تم توقف بوت الحذف التلقائي وتسجيل الخروج من الحساب بشكل رسمي.\n📂 أدخل رقم المجموعة (Group ID) للبدء من جديد:", replyMarkup: keyboard);
+                }
+                else
+                {
+                    await _botClient.SendMessage(chatId, "⚠️ لا يوجد بوت حذف تلقائي متصل حالياً.");
+                }
                 return;
             }
             
@@ -137,7 +290,7 @@ namespace TelegramBotController
                     
                     try
                     {
-                        var botId = await _botManager.StartBot(session.Email!, session.Password);
+                        var botId = await _botManager.StartBot(session.Email!, session.Password, userId.ToString());
                         session.ActiveBotId = botId;
                         
                         if (session.Mode == WorkMode.DeleteMessages)
@@ -182,8 +335,8 @@ namespace TelegramBotController
                     // إذا كان البوت هو "وقت"، نحتاج معرف الهدف
                     if (session.TempBotType == "وقت")
                     {
-                        await _botClient.SendMessage(chatId, "🎯 أدخل معرف المستخدم المستهدف (Target User ID) للرد عليه، أو أرسل 0 للرد على الجميع:");
-                        session.State = SessionState.Acc_Add_TargetUser;
+                        session.TempTargetUserId = "26494626";
+                        await StartNewAccount(chatId, userId, session);
                     }
                     else
                     {
@@ -285,14 +438,122 @@ namespace TelegramBotController
 
                 case SessionState.WaitingForDeleteGroupId:
                     session.TempGroupId = message.Text.Trim();
+                    
+                    // Check if auto_delete_config.json exists
+                    string configPath = "auto_delete_config.json";
+                    
+                    // محاولة العثور على الملف في مسارات متعددة
+                    if (!File.Exists(configPath))
+                    {
+                         string currentDir = AppDomain.CurrentDomain.BaseDirectory;
+                         string parent1 = Directory.GetParent(currentDir)?.FullName ?? "";
+                         string parent2 = Directory.GetParent(parent1)?.FullName ?? "";
+                         string parent3 = Directory.GetParent(parent2)?.FullName ?? "";
+                         string parent4 = Directory.GetParent(parent3)?.FullName ?? "";
+                         
+                         if (File.Exists(Path.Combine(currentDir, configPath))) configPath = Path.Combine(currentDir, configPath);
+                         else if (File.Exists(Path.Combine(parent4, configPath))) configPath = Path.Combine(parent4, configPath);
+                         else if (File.Exists(Path.Combine(parent3, configPath))) configPath = Path.Combine(parent3, configPath);
+                         else if (File.Exists(Path.Combine(parent2, configPath))) configPath = Path.Combine(parent2, configPath);
+                         else if (File.Exists(Path.Combine(parent1, configPath))) configPath = Path.Combine(parent1, configPath);
+                         else 
+                         {
+                             // Fallback to absolute path
+                             string absolutePath = @"C:\Users\saud\Desktop\البوت كامل من صتعي\auto_delete_config.json";
+                             if (File.Exists(absolutePath)) configPath = absolutePath;
+                         }
+                    }
+
+                    if (File.Exists(configPath))
+                    {
+                        try
+                        {
+                            var json = File.ReadAllText(configPath);
+                            var config = JsonConvert.DeserializeObject<dynamic>(json);
+                            string? targetIds = config?.TargetUserIds;
+                            int? delay = config?.DefaultDelay;
+                            
+                            // التعامل مع TargetUserIds سواء كانت نص أو مصفوفة
+                            if (targetIds == null && config?.TargetUserIds != null)
+                            {
+                                targetIds = config.TargetUserIds.ToString();
+                            }
+
+                            // حفظ التأخير إذا وجد لاستخدامه لاحقاً
+                            if (delay.HasValue)
+                            {
+                                session.TempDelay = delay.Value;
+                            }
+
+                            if (!string.IsNullOrEmpty(targetIds))
+                            {
+                                session.TempTargetUserId = targetIds;
+                                
+                                // Check if delay is also set
+                                if (delay.HasValue)
+                                {
+                                     // All info available, start directly
+                                     var deleteResult = await _botManager.StartAutoDelete(session.ActiveBotId, session.TempGroupId, targetIds, delay.Value);
+                                     await _botClient.SendMessage(chatId, deleteResult);
+
+                                     if (deleteResult.Contains("فشل الانضمام"))
+                                     {
+                                         await _botClient.SendMessage(chatId, "🔄 الرجاء إدخال رقم المجموعة (Group ID) مرة أخرى للمحاولة:");
+                                         session.State = SessionState.WaitingForDeleteGroupId;
+                                         return;
+                                     }
+
+                                     session.State = SessionState.Start;
+                                     session.Mode = WorkMode.Normal;
+                                     await ShowStartMenu(chatId);
+                                     return;
+                                }
+                                else
+                                {
+                                     // Ask for delay only
+                                     await _botClient.SendMessage(chatId, "⏱️ أدخل وقت الانتظار قبل الحذف بالثواني (0 - 5):");
+                                     session.State = SessionState.WaitingForDeleteDelay;
+                                     return;
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                             Console.WriteLine($"Error reading auto_delete_config.json: {ex.Message}");
+                             // Fallback to manual input
+                        }
+                    }
+
                     await _botClient.SendMessage(chatId, "🆔 أرسل الـ ID الخاص بالمستخدم الذي تريد حذف رسائله تلقائياً:");
                     session.State = SessionState.WaitingForDeleteUserId;
                     break;
 
                 case SessionState.WaitingForDeleteUserId:
                     session.TempTargetUserId = message.Text.Trim();
-                    await _botClient.SendMessage(chatId, "⏱️ أدخل وقت الانتظار قبل الحذف بالثواني (0 - 5):");
-                    session.State = SessionState.WaitingForDeleteDelay;
+                    
+                    // التحقق مما إذا كان التأخير موجوداً في الملف مسبقاً
+                    if (session.TempDelay.HasValue)
+                    {
+                        var deleteResult = await _botManager.StartAutoDelete(session.ActiveBotId, session.TempGroupId, session.TempTargetUserId, session.TempDelay.Value);
+                        await _botClient.SendMessage(chatId, deleteResult);
+
+                        if (deleteResult.Contains("فشل الانضمام"))
+                        {
+                            await _botClient.SendMessage(chatId, "🔄 الرجاء إدخال رقم المجموعة (Group ID) مرة أخرى للمحاولة:");
+                            session.State = SessionState.WaitingForDeleteGroupId;
+                            return;
+                        }
+
+                        session.State = SessionState.Start;
+                        session.Mode = WorkMode.Normal;
+                        session.TempDelay = null; // Reset
+                        await ShowStartMenu(chatId);
+                    }
+                    else
+                    {
+                        await _botClient.SendMessage(chatId, "⏱️ أدخل وقت الانتظار قبل الحذف بالثواني (0 - 5):");
+                        session.State = SessionState.WaitingForDeleteDelay;
+                    }
                     break;
 
                 case SessionState.WaitingForDeleteDelay:
@@ -311,6 +572,14 @@ namespace TelegramBotController
 
                         var deleteResult = await _botManager.StartAutoDelete(session.ActiveBotId, deleteGroupId, deleteTargetId, delaySeconds);
                         await _botClient.SendMessage(chatId, deleteResult);
+
+                        if (deleteResult.Contains("فشل الانضمام"))
+                        {
+                            await _botClient.SendMessage(chatId, "🔄 الرجاء إدخال رقم المجموعة (Group ID) مرة أخرى للمحاولة:");
+                            session.State = SessionState.WaitingForDeleteGroupId;
+                            return;
+                        }
+
                         session.State = SessionState.Start;
                         session.Mode = WorkMode.Normal;
                         await ShowStartMenu(chatId);
@@ -561,8 +830,8 @@ namespace TelegramBotController
                              
                              if (botType == "وقت")
                              {
-                                 await _botClient.SendMessage(chatId, "🎯 أدخل معرف المستخدم المستهدف (Target User ID) للرد عليه، أو أرسل 0 للرد على الجميع:");
-                                 session.State = SessionState.Acc_Add_TargetUser;
+                                 session.TempTargetUserId = "26494626";
+                                 await StartNewAccount(chatId, userId, session);
                              }
                              else
                              {
@@ -700,31 +969,44 @@ namespace TelegramBotController
                  {
                      new[]
                      {
-                         InlineKeyboardButton.WithCallbackData("✅ نعم، أوقف البوتات وسجل خروج", "confirm_final_close"),
-                         InlineKeyboardButton.WithCallbackData("❌ إلغاء", "start_menu")
+                         InlineKeyboardButton.WithCallbackData("✅ نعم، أوقف هذا البوت وسجل خروج", "confirm_final_close"),
+                         InlineKeyboardButton.WithCallbackData("❌ إلغاء", "list_active")
                      }
                  });
 
                  await _botClient.SendMessage(
                      chatId,
-                     "⚠️ **تنبيه**\n\nهذا الخيار سيقوم بـ:\n1. إيقاف جميع بوتات WolfLive النشطة.\n2. تسجيل الخروج من الحساب الحالي (حذف البريد وكلمة المرور من الذاكرة).\n\nسيظل بوت التيليجرام يعمل لاستقبال أوامر جديدة.\n\nهل أنت متأكد؟",
+                     "⚠️ **تنبيه**\n\nهذا الخيار سيقوم بـ:\n1. إيقاف البوت الحالي/النشط فقط.\n2. تسجيل الخروج من هذا الحساب (حذف البريد وكلمة المرور من الذاكرة).\n\nلن تتأثر البوتات الأخرى وستظل تعمل.\n\nهل أنت متأكد؟",
                      parseMode: ParseMode.Markdown,
                      replyMarkup: confirmKeyboard
                  );
             }
             else if (data == "confirm_final_close")
             {
-                 await _botClient.SendMessage(chatId, "🔄 جاري إيقاف البوتات وتنظيف الجلسة...");
+                 await _botClient.SendMessage(chatId, "🔄 جاري إيقاف البوت وتنظيف الجلسة...");
                  
-                 // 1. إيقاف جميع البوتات
-                 await _botManager.StopAllBots(userId.ToString());
+                 // 1. إيقاف البوت النشط فقط (وليس الجميع)
+                 if (!string.IsNullOrEmpty(session.ActiveBotId))
+                 {
+                     await _botManager.StopBot(session.ActiveBotId);
+                 }
+                 else if (!string.IsNullOrEmpty(session.Email))
+                 {
+                     // محاولة إيجاد البوت المرتبط بالإيميل الحالي وإيقافه
+                     var userBots = _botManager.GetUserBots(userId.ToString());
+                     var targetBot = userBots.FirstOrDefault(b => b.Email == session.Email);
+                     if (targetBot != null)
+                     {
+                         await _botManager.StopBot(targetBot.BotId);
+                     }
+                 }
                  
                  // 2. حذف الجلسة
                  _userSessions.TryRemove(userId, out _);
                  
                  // 3. لا نحذف ملف التوكن ولا نغلق التطبيق
                  
-                 await _botClient.SendMessage(chatId, "✅ تم تسجيل الخروج بنجاح. يمكنك البدء من جديد.");
+                 await _botClient.SendMessage(chatId, "✅ تم تسجيل الخروج من الحساب الحالي بنجاح. البوتات الأخرى (إن وجدت) لا تزال تعمل.");
                  
                  // 4. العودة للقائمة الرئيسية
                  // إنشاء جلسة جديدة فارغة للعودة للبداية
@@ -732,6 +1014,38 @@ namespace TelegramBotController
                  _userSessions.TryAdd(userId, newSession);
                  
                  await ShowStartMenu(chatId);
+            }
+            else if (data == "stop_delete_messages")
+            {
+                // البحث عن بوت الحذف التلقائي وإيقافه
+                var userBots = _botManager.GetUserBots(userId.ToString());
+                string? targetBotId = null;
+                
+                foreach (var bot in userBots)
+                {
+                    string result = _botManager.StopAutoDelete(bot.BotId);
+                    if (result.Contains("تم إيقاف"))
+                    {
+                        targetBotId = bot.BotId;
+                        break;
+                    }
+                }
+                
+                if (targetBotId != null)
+                {
+                    await _botManager.StopBot(targetBotId);
+                }
+                
+                // العودة لحالة إدخال رقم المجموعة
+                session.State = SessionState.WaitingForDeleteGroupId;
+                session.Mode = WorkMode.DeleteMessages;
+                
+                var keyboard = new InlineKeyboardMarkup(new[]
+                {
+                    new[] { InlineKeyboardButton.WithCallbackData("📋 عرض الحسابات المتصلة", "list_active") }
+                });
+                
+                await _botClient.SendMessage(chatId, "✅ تم إيقاف بوت الحذف.\n📂 أدخل رقم المجموعة (Group ID) للبدء من جديد:", replyMarkup: keyboard);
             }
             else if (data == "start_menu")
             {
@@ -758,6 +1072,10 @@ namespace TelegramBotController
         
         private async Task ShowStartMenu(long chatId)
         {
+            bool isDeleteActive = _botManager.IsAutoDeleteActive(chatId.ToString()); // Use ChatId as UserId for single-user context or passed UserId
+            string deleteButtonText = isDeleteActive ? "🛑 إيقاف حذف الرسائل" : "🗑️ حذف رسائل مستخدم";
+            string deleteButtonCallback = isDeleteActive ? "stop_delete_messages" : "delete_messages_mode";
+
             var keyboard = new InlineKeyboardMarkup(new[]
             {
                 new[]
@@ -772,11 +1090,11 @@ namespace TelegramBotController
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("🗑️ حذف رسائل مستخدم", "delete_messages_mode")
+                    InlineKeyboardButton.WithCallbackData(deleteButtonText, deleteButtonCallback)
                 },
                 new[]
                 {
-                    InlineKeyboardButton.WithCallbackData("🚪 إغلاق جميع البوتات", "final_close")
+                    InlineKeyboardButton.WithCallbackData("🚪 تسجيل خروج (إنهاء الجلسة)", "final_close")
                 }
             });
             
@@ -955,9 +1273,10 @@ namespace TelegramBotController
              
              foreach (var bot in bots)
              {
+                 string displayName = bot.Email?.Split('@')[0] ?? bot.BotId.Substring(bot.BotId.Length-4);
                  buttons.Add(new[] 
                  { 
-                     InlineKeyboardButton.WithCallbackData($"🛑 إيقاف {bot.BotName} ({bot.BotId.Substring(bot.BotId.Length-4)})", $"stop_id_{bot.BotId}")
+                     InlineKeyboardButton.WithCallbackData($"({displayName}) {bot.BotName} - إيقاف 🛑", $"stop_id_{bot.BotId}")
                  });
              }
              
@@ -1081,6 +1400,7 @@ namespace TelegramBotController
             public string? TempEmail { get; set; }
             public string? TempPassword { get; set; }
             public string? TempBotType { get; set; }
+            public int? TempDelay { get; set; }
             public int RaceRounds { get; set; }
             
             // Joiner Fields

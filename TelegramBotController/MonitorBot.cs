@@ -24,7 +24,7 @@ namespace TelegramBotController
         {
             { "76305584", "صياد" },
             { "32060007", "صيد" },
-            { "19121683", "اسرق" },
+            { "39369782", "اسرق" },
             { "45578849", "بطل" },
             { "26494626", "وقت" },
             { "75423789", "عكس" },
@@ -33,26 +33,23 @@ namespace TelegramBotController
             { "80277459", "سباق" }
         };
 
-        // Race Feature Variables
-        private volatile bool _isRaceMode = false;
-        private int _totalRaceRounds = 0;
-        private int _currentRaceRound = 0;
-        private bool _isTrainingEnabled = false;
-        private string _raceTargetGroupId = "";
+        // Race Feature - Session Logic
+        private RaceSession? _raceSession;
         private const string RaceBotId = "80277459";
         
         // Race Config Commands
         private string _cmdRaceEnergy = "!س طاقه";
         private string _cmdRaceGrind = "!س جلد";
         private string _cmdRaceTrain = "!س تدريب كل";
+        private string _cmdRaceAlert = "!س تنبية طاقة";
 
         // Configuration
         private Dictionary<string, BotConfig> _botConfigs = new Dictionary<string, BotConfig>();
         private int _delaySeconds = 10; // Default delay
         private const string ConfigFileName = "monitor_config.json";
 
-        public string Name => "🦅 بوت المراقبة";
-        public string Description => "مراقبة المعززات (صيد، صياد، ...) والمشاركة تلقائياً";
+        public virtual string Name => "👁️ المراقب";
+        public virtual string Description => "مراقبة المعززات (صيد، صياد، ...) والمشاركة تلقائياً";
         public bool IsRunning => _isRunning;
         public int PlayCount => _playCount;
         public IWolfClient? Client => _client;
@@ -103,27 +100,11 @@ namespace TelegramBotController
 
                             var raceGrind = configData.Phrases.Find(p => p.Name == "سباق_جلد");
                             if (raceGrind != null) _cmdRaceGrind = raceGrind.Command;
-
-                            // Training command uses default or remains hardcoded as per request
                         }
-                        
-                        // Load Race Group ID
-                        if (!string.IsNullOrEmpty(configData.TargetGroupId))
-                        {
-                            _raceTargetGroupId = configData.TargetGroupId;
-                            // Console.WriteLine($"✅ تم تحميل مجموعة السباق من الملف: {_raceTargetGroupId}");
-                        }
-                        else
-                        {
-                            Console.WriteLine("⚠️ لم يتم العثور على مجموعة السباق في الملف.");
-                        }
-
-                        // Console.WriteLine($"✅ تم تحميل إعدادات المراقبة والسباق: {_botConfigs.Count} بوتات، تأخير {_delaySeconds} ثواني.");
                     }
                 }
                 else
                 {
-                    // Create default config if not exists
                     SaveDefaultConfig();
                 }
             }
@@ -132,7 +113,6 @@ namespace TelegramBotController
                 Console.WriteLine($"❌ خطأ في تحميل ملف الإعدادات: {ex.Message}");
             }
 
-            // Ensure we have at least the default bots if config failed or was empty
             if (_botConfigs.Count == 0)
             {
                 foreach (var kvp in _knownBotIds)
@@ -168,7 +148,6 @@ namespace TelegramBotController
                 };
                 
                 File.WriteAllText(ConfigFileName, JsonConvert.SerializeObject(data, Formatting.Indented));
-                Console.WriteLine("✅ تم إنشاء ملف إعدادات افتراضي.");
             }
             catch { }
         }
@@ -177,7 +156,6 @@ namespace TelegramBotController
         {
             if (_isRunning) return;
 
-            // Reload config on start to pick up any changes
             LoadConfiguration();
 
             try
@@ -188,11 +166,8 @@ namespace TelegramBotController
 
                 _isRunning = true;
 
-                // Set target group if provided
                 if (!string.IsNullOrEmpty(groupId) && groupId != "0")
                 {
-                    _raceTargetGroupId = groupId;
-                    // Try to join the group in background
                     _ = Task.Run(async () => 
                     {
                         try 
@@ -213,7 +188,6 @@ namespace TelegramBotController
                      _client.Messaging.OnPrivateMessage += HandlePrivateMessage;
                 }
 
-                // بدء معالجة الطابور
                 _ = Task.Run(ProcessQueue);
 
                 Console.WriteLine($"✅ {Name} - جاهز للعمل");
@@ -227,11 +201,19 @@ namespace TelegramBotController
         public async Task StopAsync()
         {
             _isRunning = false;
+            StopRaceSession(); // Ensure session is cleared
             if (_client != null)
             {
                 try {
+                     // محاولة تسجيل خروج نظامي قبل قطع الاتصال
+                     await _client.Emit(new Packet("private logout", null));
+                     await Task.Delay(500); // مهلة قصيرة لإرسال الباكت
+                } catch {}
+
+                try {
                      await _client.Connection.DisconnectAsync();
                 } catch {}
+
                 _client = null;
             }
         }
@@ -248,48 +230,39 @@ namespace TelegramBotController
 
         public void StartRaceSession(int rounds, bool training, string groupId)
         {
-            if (!_isRunning) return;
+            if (!_isRunning || _client == null) return;
             
-            _isRaceMode = true;
-            _totalRaceRounds = rounds;
-            _currentRaceRound = 0;
-            _isTrainingEnabled = training;
-            
-            // If groupId is provided (not null/empty/"0"), update the target.
-            // Otherwise, keep the one loaded from config.
-            if (!string.IsNullOrEmpty(groupId) && groupId != "0")
-            {
-                _raceTargetGroupId = groupId;
-            }
-            
-            Console.WriteLine($"🏁 بدء جلسة سباق: {rounds} جولات، تدريب: {training}، المجموعة: {_raceTargetGroupId}");
-            
-            if (string.IsNullOrEmpty(_raceTargetGroupId) || _raceTargetGroupId == "0")
-            {
-                Console.WriteLine("⚠️ تحذير: لم يتم تحديد مجموعة للسباق!");
-            }
-            
-            // Start sequence: Check Energy via PM
-            _globalQueue.Enqueue((RaceBotId, new Func<Task>(async () =>
-            {
-                Console.WriteLine("⚡ التحقق من الطاقة...");
-                await _client.PrivateMessage(RaceBotId, _cmdRaceEnergy);
-            })));
+            // Create a completely new, isolated session
+            _raceSession = new RaceSession(
+                _client, 
+                (action) => _globalQueue.Enqueue((RaceBotId, action)), 
+                rounds, 
+                training, 
+                groupId,
+                _cmdRaceAlert,
+                _cmdRaceEnergy,
+                _cmdRaceGrind,
+                _cmdRaceTrain
+            );
+
+            Console.WriteLine($"🏁 بدء جلسة سباق جديدة (معزولة): {rounds} جولات، تدريب: {training}");
+            _raceSession.Start();
         }
 
         public void StopRaceSession()
         {
-            _isRaceMode = false;
-            _isWaitingForRaceEnd = false;
-            Console.WriteLine("🛑 تم إيقاف وضع السباق.");
+            if (_raceSession != null)
+            {
+                _raceSession = null; // Dispose/Clear session
+                Console.WriteLine("🛑 تم إيقاف وضع السباق.");
+            }
         }
 
         public void ResetCounters()
         {
             _playCount = 0;
             _processedMessages.Clear();
-            _isRaceMode = false;
-            _isWaitingForRaceEnd = false;
+            StopRaceSession();
         }
 
         public void SimulateMessage(string content, string userId, string groupId)
@@ -301,76 +274,15 @@ namespace TelegramBotController
         {
              if (!_isRunning) return;
 
-             // Handle Race Bot Messages
-             if (_isRaceMode && message.UserId == RaceBotId)
+             // Delegate to Race Session if active and message is from Race Bot
+             if (_raceSession != null && message.UserId == RaceBotId)
              {
-                 HandleRacePrivateMessage(message.Content);
+                 _raceSession.HandlePrivateMessage(message.Content);
                  return;
              }
 
              ProcessMessageContent(message.Content, message.UserId, message.IsGroup);
         }
-
-        private void HandleRacePrivateMessage(string content)
-        {
-            // Check for Energy: "طاقة F35: 100%"
-            if (content.Contains("100%")) 
-            {
-                 Console.WriteLine("🔋 الطاقة كاملة (100%). بدء الجولة...");
-                 StartRaceRound();
-            }
-            // Check for Training Complete: "عاد حيوانك لطاقته الكاملة!"
-            else if (content.Contains("عاد حيوانك لطاقته الكاملة"))
-            {
-                Console.WriteLine("💪 اكتمل التدريب. بدء دورة جديدة...");
-                _currentRaceRound = 0; // Reset rounds for new loop
-                StartRaceRound();
-            }
-        }
-
-        private void StartRaceRound()
-        {
-            if (!_isRaceMode) return;
-            
-            // Fallback if empty
-            if (string.IsNullOrEmpty(_raceTargetGroupId) || _raceTargetGroupId == "0")
-            {
-                 Console.WriteLine("⚠️ مجموعة السباق غير محددة! محاولة إعادة التحميل...");
-                 LoadConfiguration();
-                 // if (string.IsNullOrEmpty(_raceTargetGroupId)) _raceTargetGroupId = "18822804"; // Hard fallback removed
-            }
-
-            if (string.IsNullOrEmpty(_raceTargetGroupId))
-            {
-                 Console.WriteLine("❌ فشل تحديد مجموعة السباق. يرجى التحقق من monitor_config.json");
-                 return;
-            }
-
-            _globalQueue.Enqueue((_raceTargetGroupId, new Func<Task>(async () =>
-            {
-                Console.WriteLine($"🏎️ إرسال أمر السباق للمجموعة {_raceTargetGroupId}...");
-                try 
-                {
-                    if (int.TryParse(_raceTargetGroupId, out int gid))
-                    {
-                        await _client.Emit(new Packet("group join", new { id = gid, password = "" }));
-                        await Task.Delay(500);
-                        await _client.GroupMessage(_raceTargetGroupId, _cmdRaceGrind);
-                    }
-                    else
-                    {
-                         Console.WriteLine($"❌ معرف المجموعة غير صالح: {_raceTargetGroupId}");
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"❌ خطأ أثناء بدء جولة السباق: {ex.Message}");
-                }
-            })));
-        }
-
-        // Race State
-        private bool _isWaitingForRaceEnd = false;
 
         private void OnMessageReceived(WolfMessage wolfMsg)
         {
@@ -380,80 +292,18 @@ namespace TelegramBotController
             {
                 var msg = new Message(wolfMsg);
 
-                // Handle Race Group Messages
-                if (_isRaceMode && msg.IsGroup && msg.GroupId == _raceTargetGroupId)
+                // Race Logic
+                if (_raceSession != null)
                 {
-                    // Check for "Cannot use command during race" error
-                    if (msg.Content.Contains("لا يمكنك استخدام هذا الأمر أثناء السباق"))
+                    if (msg.IsGroup)
                     {
-                        Console.WriteLine("⚠️ سباق جارٍ بالفعل. انتظار انتهاء السباق الحالي...");
-                        _isWaitingForRaceEnd = true;
-                        return;
+                        _raceSession.HandleGroupMessage(msg);
                     }
-
-                    if (msg.Content.Contains("انتهى السباق وهذه النتائج النهائية"))
+                    else if (msg.UserId == RaceBotId)
                     {
-                        Console.WriteLine("🏁 انتهت جولة السباق.");
-
-                        if (_isWaitingForRaceEnd)
-                        {
-                            Console.WriteLine("🔄 إعادة محاولة بدء السباق...");
-                            _isWaitingForRaceEnd = false;
-                            
-                            // Retry the race command immediately
-                            _globalQueue.Enqueue((_raceTargetGroupId, new Func<Task>(async () =>
-                            {
-                                await Task.Delay(2000); // Wait a bit
-                                await _client.GroupMessage(_raceTargetGroupId, _cmdRaceGrind);
-                            })));
-                            return; // Don't process as a completed round yet
-                        }
-
-                        _currentRaceRound++;
-                        _playCount++;
-
-                        if (_currentRaceRound < _totalRaceRounds)
-                        {
-                            Console.WriteLine($"🔄 الجولة {_currentRaceRound + 1} من {_totalRaceRounds}. تكرار السباق...");
-                            // Repeat race command
-                             _globalQueue.Enqueue((_raceTargetGroupId, new Func<Task>(async () =>
-                            {
-                                await Task.Delay(2000); // Wait a bit
-                                await _client.GroupMessage(_raceTargetGroupId, _cmdRaceGrind);
-                            })));
-                        }
-                        else
-                        {
-                            Console.WriteLine("🛑 انتهت جميع الجولات.");
-                            
-                            // Training Logic
-                            if (_isTrainingEnabled && _totalRaceRounds < 5)
-                            {
-                                int percentageNeeded = 100 - (_totalRaceRounds * 20);
-                                string trainCmd = $"{_cmdRaceTrain} {percentageNeeded}";
-                                
-                                Console.WriteLine($"🏋️ إرسال أمر التدريب: {trainCmd}");
-                                
-                                _globalQueue.Enqueue((RaceBotId, new Func<Task>(async () =>
-                                {
-                                    await _client.PrivateMessage(RaceBotId, trainCmd);
-                                })));
-                            }
-                            else
-                            {
-                                Console.WriteLine("⚠️ لا يوجد تدريب (إما غير مفعل أو الجولات = 5). انتظار دورة جديدة...");
-                                // Note: Without training, we don't get the "Full Energy" message to trigger the loop.
-                                // If the user wants to loop even without training (e.g. relying on natural regen), 
-                                // we might need a timer, but the prompt says "wait until message arrives".
-                            }
-                        }
+                        _raceSession.HandlePrivateMessage(msg.Content);
+                        return; // Don't process monitor logic for Race Bot PMs
                     }
-                }
-
-                if (msg.UserId == RaceBotId && !msg.IsGroup && _isRaceMode)
-                {
-                     HandleRacePrivateMessage(msg.Content);
-                     return;
                 }
 
                 ProcessMessageContent(msg.Content, msg.UserId, msg.IsGroup);
@@ -467,7 +317,7 @@ namespace TelegramBotController
         private void ProcessMessageContent(string content, string userId, bool isGroup)
         {
             // If in Race Mode, do NOT process monitor messages
-            if (_isRaceMode) return;
+            if (_raceSession != null) return;
 
             try
             {
@@ -544,15 +394,13 @@ namespace TelegramBotController
                     {
                         await item.Action();
                         
-                        // تطبيق التأخير فقط في وضع المراقبة (وليس السباق)
-                        if (!_isRaceMode)
+                        if (_raceSession == null)
                         {
                             Console.WriteLine($"⏳ انتظار {_delaySeconds} ثواني قبل العملية التالية...");
                             await Task.Delay(_delaySeconds * 1000); 
                         }
                         else
                         {
-                            // تأخير بسيط جداً في وضع السباق لمنع الضغط الزائد
                             await Task.Delay(100);
                         }
                     }
@@ -563,16 +411,206 @@ namespace TelegramBotController
                 }
                 else
                 {
-                    await Task.Delay(100); // Check queue every 100ms if empty
+                    await Task.Delay(100);
                 }
             }
         }
-        
-        
+
         private class BotConfig
         {
             public string Name { get; set; } = "";
             public string Command { get; set; } = "";
+        }
+        
+        // --- Isolated Race Session Class ---
+        private class RaceSession
+        {
+            private readonly WolfClient _client;
+            private readonly Action<Func<Task>> _enqueueAction;
+            
+            // State
+            private readonly int _totalRounds;
+            private readonly bool _isTrainingEnabled;
+            private readonly string _targetGroupId;
+            private int _currentRound;
+            private bool _isWaitingForRaceEnd;
+            
+            // Commands
+            private readonly string _cmdAlert;
+            private readonly string _cmdEnergy;
+            private readonly string _cmdGrind;
+            private readonly string _cmdTrain;
+            
+            private const string RaceBotId = "80277459";
+
+            public RaceSession(
+                WolfClient client, 
+                Action<Func<Task>> enqueueAction, 
+                int rounds, 
+                bool training, 
+                string groupId,
+                string cmdAlert,
+                string cmdEnergy,
+                string cmdGrind,
+                string cmdTrain)
+            {
+                _client = client;
+                _enqueueAction = enqueueAction;
+                _totalRounds = rounds;
+                _isTrainingEnabled = training;
+                _targetGroupId = (string.IsNullOrEmpty(groupId) || groupId == "0") ? "" : groupId;
+                
+                _cmdAlert = cmdAlert;
+                _cmdEnergy = cmdEnergy;
+                _cmdGrind = cmdGrind;
+                _cmdTrain = cmdTrain;
+                
+                _currentRound = 0;
+                _isWaitingForRaceEnd = false;
+            }
+
+            public void Start()
+            {
+                if (string.IsNullOrEmpty(_targetGroupId))
+                {
+                    Console.WriteLine("⚠️ تحذير: لم يتم تحديد مجموعة للسباق!");
+                    return;
+                }
+
+                // Initial Check: Alert Settings
+                _enqueueAction(async () =>
+                {
+                    Console.WriteLine("🔔 التحقق من إعدادات التنبيه...");
+                    await _client.PrivateMessage(RaceBotId, _cmdAlert);
+                });
+            }
+
+            public void HandlePrivateMessage(string content)
+            {
+                // 1. Alert Status Check
+                if (content.Contains("ستصلك تنبيهات"))
+                {
+                    Console.WriteLine("✅ التنبيهات مفعلة. التحقق من الطاقة...");
+                    _enqueueAction(async () =>
+                    {
+                        await Task.Delay(1000);
+                        await _client.PrivateMessage(RaceBotId, _cmdEnergy);
+                    });
+                    return;
+                }
+                else if (content.Contains("لن تصلك تنبيهات"))
+                {
+                    Console.WriteLine("⚠️ التنبيهات غير مفعلة. جاري التفعيل...");
+                    _enqueueAction(async () =>
+                    {
+                        await Task.Delay(2000);
+                        await _client.PrivateMessage(RaceBotId, _cmdAlert);
+                    });
+                    return;
+                }
+
+                // 2. Energy Check -> Start Round
+                if (content.Contains("100%")) 
+                {
+                     Console.WriteLine("🔋 الطاقة كاملة (100%). بدء الجولة...");
+                     StartRound();
+                }
+                // 3. Training Complete -> Restart
+                else if (content.Contains("عاد حيوانك لطاقته الكاملة"))
+                {
+                    Console.WriteLine("💪 اكتمل التدريب. بدء دورة جديدة...");
+                    _currentRound = 0;
+                    StartRound();
+                }
+            }
+
+            public void HandleGroupMessage(Message msg)
+            {
+                if (msg.GroupId != _targetGroupId) return;
+
+                if (msg.Content.Contains("لا يمكنك استخدام هذا الأمر أثناء السباق"))
+                {
+                    Console.WriteLine("⚠️ سباق جارٍ بالفعل. انتظار انتهاء السباق الحالي...");
+                    _isWaitingForRaceEnd = true;
+                    return;
+                }
+
+                if (msg.Content.Contains("انتهى السباق وهذه النتائج النهائية"))
+                {
+                    Console.WriteLine("🏁 انتهت جولة السباق.");
+
+                    if (_isWaitingForRaceEnd)
+                    {
+                        Console.WriteLine("🔄 إعادة محاولة بدء السباق...");
+                        _isWaitingForRaceEnd = false;
+                        
+                        _enqueueAction(async () =>
+                        {
+                            await Task.Delay(2000);
+                            await _client.GroupMessage(_targetGroupId, _cmdGrind);
+                        });
+                        return;
+                    }
+
+                    _currentRound++;
+                    // Note: We don't increment parent play count here to avoid shared state issues, 
+                    // or we could expose an event. For now, we focus on isolation.
+
+                    if (_currentRound < _totalRounds)
+                    {
+                        Console.WriteLine($"🔄 الجولة {_currentRound + 1} من {_totalRounds}. تكرار السباق...");
+                         _enqueueAction(async () =>
+                        {
+                            await Task.Delay(2000);
+                            await _client.GroupMessage(_targetGroupId, _cmdGrind);
+                        });
+                    }
+                    else
+                    {
+                        Console.WriteLine("🛑 انتهت جميع الجولات.");
+                        
+                        if (_isTrainingEnabled && _totalRounds < 5)
+                        {
+                            int percentageNeeded = 100 - (_totalRounds * 20);
+                            string trainCmd = $"{_cmdTrain} {percentageNeeded}";
+                            
+                            Console.WriteLine($"🏋️ إرسال أمر التدريب: {trainCmd}");
+                            
+                            _enqueueAction(async () =>
+                            {
+                                await _client.PrivateMessage(RaceBotId, trainCmd);
+                            });
+                        }
+                        else
+                        {
+                            Console.WriteLine("⚠️ لا يوجد تدريب مطلوب. انتظار...");
+                        }
+                    }
+                }
+            }
+
+            private void StartRound()
+            {
+                if (string.IsNullOrEmpty(_targetGroupId)) return;
+
+                _enqueueAction(async () =>
+                {
+                    Console.WriteLine($"🏎️ إرسال أمر السباق للمجموعة {_targetGroupId}...");
+                    try 
+                    {
+                        if (int.TryParse(_targetGroupId, out int gid))
+                        {
+                            await _client.Emit(new Packet("group join", new { id = gid, password = "" }));
+                            await Task.Delay(500);
+                            await _client.GroupMessage(_targetGroupId, _cmdGrind);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"❌ خطأ أثناء بدء جولة السباق: {ex.Message}");
+                    }
+                });
+            }
         }
     }
 }

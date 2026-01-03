@@ -26,6 +26,11 @@ namespace TelegramBotController
         public int PlayCount => _playCount;
         public IWolfClient? Client => _client;
         public event Action<string>? OnLog;
+
+        private void Log(string message)
+        {
+            OnLog?.Invoke(message);
+        }
         
         /// <summary>
         /// مُنشئ الفئة
@@ -80,15 +85,24 @@ namespace TelegramBotController
             {
                 // Console.WriteLine($"⏱️ [TimeBot] رسالة من الهدف {message.UserId}: {message.Content}");
                 
-                // تحليل الرسالة: !اكتب {الان} بعد مرور 5 ثانية للفوز
-                // Regex: (!)?اكتب \{(.*?)\} بعد مرور (\d+) ثانية للفوز
-                // نستخدم نمطاً مرناً ليقبل الرسالة بوجود علامة التعجب أو عدمها
-                var match = Regex.Match(message.Content, @"(?:!|^)\s*اكتب\s*\{(.*?)\}\s*بعد مرور\s*(\d+)\s*ثانية للفوز");
+                // تحليل الرسالة: 
+                // Arabic: !اكتب {الان} بعد مرور 5 ثانية للفوز
+                // English: Type {now} 9 seconds from now to win!
+                
+                // Arabic Pattern
+                var match = Regex.Match(message.Content, @"(?:!|^)\s*اكتب\s*\{(.*?)\}\s*بعد مرور\s*(\d+)\s*ثانية للفوز", RegexOptions.IgnoreCase);
                 
                 if (!match.Success)
                 {
-                     // محاولة ثانية بدون اشتراط البداية (في حال كان هناك نص قبل الأمر)
-                     match = Regex.Match(message.Content, @"اكتب\s*\{(.*?)\}\s*بعد مرور\s*(\d+)\s*ثانية للفوز");
+                     // Try Arabic without start anchor
+                     match = Regex.Match(message.Content, @"اكتب\s*\{(.*?)\}\s*بعد مرور\s*(\d+)\s*ثانية للفوز", RegexOptions.IgnoreCase);
+                }
+
+                if (!match.Success)
+                {
+                    // English Pattern
+                    // Type {now} 9 seconds from now to win!
+                    match = Regex.Match(message.Content, @"Type\s*\{(.*?)\}\s*(\d+)\s*seconds from now to win", RegexOptions.IgnoreCase);
                 }
                 
                 if (match.Success)
@@ -168,7 +182,15 @@ namespace TelegramBotController
             
             try
             {
-                await _client.Connection.DisconnectAsync();
+                 // محاولة تسجيل خروج نظامي قبل قطع الاتصال
+                 await _client.Emit(new Packet("private logout", null));
+                 await Task.Delay(500);
+            }
+            catch { }
+            
+            try 
+            {
+                 await _client.Connection.DisconnectAsync();
             }
             catch { }
             

@@ -6,6 +6,10 @@ using WolfLive.Api;
 using WolfLive.Api.Models;
 using WolfLive.Api.Delegates;
 
+using System.IO;
+using Newtonsoft.Json;
+using TelegramBotController.Services;
+
 namespace TelegramBotController
 {
     public interface IBot
@@ -40,6 +44,7 @@ namespace TelegramBotController
         public BotManager()
         {
             Console.WriteLine("✅ مدير البوتات جاهز للعمل");
+            Logger.LogEvent("BotManager initialized.");
         }
         
         public int GetUserBotCount(string telegramUserId)
@@ -65,7 +70,27 @@ namespace TelegramBotController
         {
             // إنشاء بوت مراقبة افتراضي للعمليات الإدارية
             string botType = "مراقبة";
-            string telegramUserId = "admin"; // معرف مؤقت
+            // استخدمنا admin سابقاً، لكن هذا يسبب مشكلة لأن البوت يسجل باسم admin وليس بمعرف المستخدم الحقيقي
+            // ولذلك لا يظهر في قائمة GetUserBots(userId)
+            // سنستخدم معرف مؤقت ولكن يجب تحديثه لاحقاً أو تمريره كمعامل
+            // الحل الأفضل: إضافة معامل telegramUserId لهذه الدالة
+            // ولكن لتجنب كسر الكود القديم، سنبحث عن طريقة أخرى أو نعتمد على StartBot الكاملة
+            // بما أن هذا الاستدعاء يأتي من TelegramController، يمكننا تمرير المعرف
+            
+            // للتوافق السريع: سنفترض أن المستخدم يريد فقط التحقق من الحساب
+            // ولكن المشكلة أن البوت يضاف لقائمة activeBots بمعرف admin
+            
+            // تصحيح: يجب أن نستخدم معرف المستخدم الفعلي. بما أننا لا نملكه هنا،
+            // سنقوم بتعديل TelegramController لاستخدام الدالة الأخرى أو تعديل هذه الدالة.
+            // الخيار الأسهل: تعديل هذه الدالة لتقبل telegramUserId
+            
+            throw new InvalidOperationException("Use the overload with telegramUserId instead.");
+        }
+
+        public async Task<string> StartBot(string email, string password, string telegramUserId)
+        {
+             // إنشاء بوت مراقبة افتراضي للعمليات الإدارية
+            string botType = "مراقبة";
             string botId = $"{telegramUserId}_{botType}_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
 
             IBot bot = new MonitorBot();
@@ -86,7 +111,10 @@ namespace TelegramBotController
                 BotType = botType,
                 StartTime = DateTime.Now,
                 LastUpdate = DateTime.Now,
-                TelegramUserId = telegramUserId
+                TelegramUserId = telegramUserId,
+                BotName = bot.Name,
+                Email = email,
+                Password = password
             });
 
             return botId;
@@ -105,6 +133,7 @@ namespace TelegramBotController
                     "عكس" => new ReverseBot(),
                     "وقت" => new TimeBot(),
                     "مراقبة" => new MonitorBot(),
+                    "join" => new MonitorBot(),
                     "سباق" => new RaceBot(),
                     _ => throw new ArgumentException($"نوع البوت غير معروف: {botType}")
                 };
@@ -135,6 +164,7 @@ namespace TelegramBotController
                 bool connected = await bot.CheckConnectionAsync();
                 if (!connected)
                 {
+                    Logger.LogError($"Connection failed for bot {botId} ({bot.Name})");
                     OnBotEvent?.Invoke(this, new BotEvent
                     {
                         BotId = botId,
@@ -148,6 +178,7 @@ namespace TelegramBotController
                 bool joined = await bot.JoinGroupAsync(groupId);
                 if (!joined)
                 {
+                    Logger.LogError($"Failed to join group {groupId} for bot {botId}");
                     OnBotEvent?.Invoke(this, new BotEvent
                     {
                         BotId = botId,
@@ -180,10 +211,13 @@ namespace TelegramBotController
                     Message = $"✅ تم تشغيل {bot.Name} بنجاح!"
                 });
                 
+                Logger.LogEvent($"Bot started: {botId} ({bot.Name})");
+
                 return new BotResult { Success = true, BotId = botId, BotName = bot.Name };
             }
             catch (Exception ex)
             {
+                Logger.LogError($"Error starting bot {botType}", ex);
                 OnBotEvent?.Invoke(this, new BotEvent
                 {
                     Type = BotEventType.Error,
@@ -193,19 +227,19 @@ namespace TelegramBotController
             }
         }
         
-        public async Task<bool> StartRaceMode(string botId, int rounds, bool training, string groupId)
+        public Task<bool> StartRaceMode(string botId, int rounds, bool training, string groupId)
         {
-            if (!_activeBots.TryGetValue(botId, out IBot bot)) return false;
+            if (!_activeBots.TryGetValue(botId, out IBot bot)) return Task.FromResult(false);
             
             try
             {
                 bot.StartRaceSession(rounds, training, groupId);
-                return true;
+                return Task.FromResult(true);
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error starting race: {ex.Message}");
-                return false;
+                Logger.LogError($"Error starting race for bot {botId}", ex);
+                return Task.FromResult(false);
             }
         }
 
@@ -219,6 +253,15 @@ namespace TelegramBotController
         {
             try
             {
+                // تنظيف معالج الحذف التلقائي إذا وجد
+                if (_deleteHandlers.TryRemove(botId, out var handler))
+                {
+                    if (_activeBots.TryGetValue(botId, out var b) && b.Client != null)
+                    {
+                        b.Client.Messaging.OnGroupMessage -= handler;
+                    }
+                }
+
                 if (!_activeBots.TryGetValue(botId, out IBot bot))
                 {
                     return new BotResult { Success = false, Error = "البوت غير موجود" };
@@ -235,10 +278,13 @@ namespace TelegramBotController
                     Message = "⏹️ تم إيقاف البوت بنجاح"
                 });
                 
+                Logger.LogEvent($"Bot stopped: {botId}");
+
                 return new BotResult { Success = true };
             }
             catch (Exception ex)
             {
+                Logger.LogError($"Error stopping bot {botId}", ex);
                 OnBotEvent?.Invoke(this, new BotEvent
                 {
                     BotId = botId,
@@ -339,29 +385,116 @@ namespace TelegramBotController
             }
         }
         
-        public Task<string> StartAutoDelete(string botId, string targetGroupId, string targetUserId, int delaySeconds)
+        public async Task<string> StartAutoDelete(string botId, string targetGroupId, string targetUserId, int delaySeconds)
         {
             if (!_activeBots.TryGetValue(botId, out var bot) || bot.Client == null)
-                return Task.FromResult("❌ البوت غير متصل.");
+                return "❌ البوت غير متصل.";
 
+            // 1. التحقق من الانضمام للمجموعة أو الانضمام إليها
+            bool isMember = false;
             try
             {
-                // التحقق من وجود المجموعة
                 var groups = bot.Client.Groups();
-                if (groups == null || !groups.Any(g => g.Id == targetGroupId))
-                    return Task.FromResult("❌ البوت غير منضم لهذه المجموعة.");
+                if (groups != null && groups.Any(g => g.Id == targetGroupId))
+                {
+                    isMember = true;
+                }
+                else
+                {
+                    // محاولة الانضمام
+                    isMember = await bot.Client.JoinGroup(targetGroupId);
+                }
             }
-            catch { return Task.FromResult("❌ خطأ في التحقق من المجموعة."); }
+            catch 
+            {
+                 // تجاهل الأخطاء، سنفترض الفشل أو المحاولة لاحقاً
+            }
 
-            // إنشاء مفتاح فريد للمعالج (لتجنب التكرار لنفس المجموعة والمستخدم)
-            // لكن هنا سنضيف معالج جديد ببساطة
+            if (!isMember)
+                return "❌ فشل الانضمام للمجموعة (قد تكون مغلقة أو البوت محظور).";
+
+            // قراءة إعدادات الرسائل من ملف JSON
+            string? spamMsg = null;
+            string? adminMsg = null;
+
+            try 
+            {
+                if (File.Exists("auto_delete_config.json"))
+                {
+                    var json = File.ReadAllText("auto_delete_config.json", System.Text.Encoding.UTF8);
+                    dynamic config = JsonConvert.DeserializeObject(json);
+                    // استخدام القيم من الملف إذا وجدت، وإلا الاحتفاظ بالافتراضي
+                    if (config?.SpamMessage != null) spamMsg = config.SpamMessage;
+                    if (config?.AdminSuccessMessage != null) adminMsg = config.AdminSuccessMessage;
+                }
+            }
+            catch {}
+
+            // 2. إرسال رسالة "انا بوت حذف..." 3 مرات (مهمة خلفية)
+            _ = Task.Run(async () => 
+            {
+                try 
+                {
+                    if (!string.IsNullOrEmpty(spamMsg))
+                    {
+                        for(int i=0; i<3; i++)
+                        {
+                            await bot.Client.GroupMessage(targetGroupId, spamMsg);
+                            await Task.Delay(1500); // فاصل زمني قصير
+                        }
+                    }
+                }
+                catch {}
+            });
+
+            // 3. مراقبة صلاحيات الأدمن وإرسال الشكر (مهمة خلفية)
+            _ = Task.Run(async () => 
+            {
+                int checks = 0;
+                // المحاولة لمدة ساعة تقريباً (360 محاولة * 10 ثواني)
+                while(checks < 360) 
+                {
+                    try
+                    {
+                        await Task.Delay(10000); // فحص كل 10 ثواني
+                        checks++;
+
+                        var me = bot.Client.CurrentUser();
+                        if (me == null) continue;
+
+                        // جلب بيانات العضو في المجموعة للتأكد من الصلاحيات
+                        var groupUsers = await bot.Client.GetGroupUsers(targetGroupId, me.Id.ToString());
+                        var groupUser = groupUsers?.FirstOrDefault();
+                        
+                        // (int)GroupUserType.User = 0, Admin/Mod/Owner > 0
+                        if (groupUser != null && (int)groupUser.Capabilities > 0) 
+                        {
+                            // أصبح أدمن!
+                            if (!string.IsNullOrEmpty(adminMsg))
+                            {
+                                await bot.Client.GroupMessage(targetGroupId, adminMsg);
+                            }
+                            break; // إنهاء الحلقة
+                        }
+                    }
+                    catch 
+                    {
+                        // تجاهل الأخطاء في الخلفية
+                    }
+                }
+            });
+
+            // 4. تفعيل معالج الحذف (Logic as before)
+            // تقسيم معرفات المستخدمين المستهدفين (يدعم التعدد)
+            var targetUserIds = targetUserId.Split(new[] { ',', ' ' }, StringSplitOptions.RemoveEmptyEntries).ToHashSet();
             
-            MessageCarrier<GroupUser> handler = async (client, msg, user) =>
+            MessageCarrier<GroupUser> handler = (client, msg, user) =>
             {
                 // التحقق من المجموعة والمستخدم
-                if (msg.IsGroup && msg.GroupId == targetGroupId && msg.UserId == targetUserId)
+                if (msg.IsGroup && msg.GroupId == targetGroupId && targetUserIds.Contains(msg.UserId))
                 {
-                    Task.Run(async () =>
+                    // استخدام المتغير المهمل (_) لإخبار المترجم أننا لا نريد انتظار هذه المهمة عمداً
+                    _ = Task.Run(async () =>
                     {
                         if (delaySeconds > 0)
                         {
@@ -375,15 +508,21 @@ namespace TelegramBotController
                         catch { }
                     });
                 }
+                return;
             };
 
             bot.Client.Messaging.OnGroupMessage += handler;
             
             // تخزين المعالج
-            // ملاحظة: هذا التخزين بسيط ولا يدعم إيقاف محدد لمجموعة معينة بسهولة (يوقف الكل للبوت)
             _deleteHandlers[botId] = handler;
             
-            return Task.FromResult($"✅ تم تفعيل الحذف التلقائي للمستخدم {targetUserId} في المجموعة {targetGroupId} بواسطة {bot.Name} (التأخير: {delaySeconds} ثواني)");
+            return $"✅ تم تفعيل الحذف التلقائي للمستخدم {targetUserId} في المجموعة {targetGroupId} بواسطة {bot.Name} (التأخير: {delaySeconds} ثواني)\n\nجاري طلب الصلاحيات...";
+        }
+
+        public bool IsAutoDeleteActive(string telegramUserId)
+        {
+            var userBots = _activeBots.Where(b => b.Key.StartsWith(telegramUserId + "_")).Select(b => b.Key);
+            return userBots.Any(id => _deleteHandlers.ContainsKey(id));
         }
 
         public string StopAutoDelete(string botId)

@@ -24,6 +24,11 @@ namespace TelegramBotController
         public int PlayCount => _playCount;
         public IWolfClient? Client => _client;
         public event Action<string>? OnLog;
+
+        private void Log(string message)
+        {
+            OnLog?.Invoke(message);
+        }
         
         public WriterBot()
         {
@@ -69,15 +74,35 @@ namespace TelegramBotController
                     Console.WriteLine($"⚠️ فشل تحميل إعدادات المجموعة لـ {Name}: {ex.Message}");
                 }
 
+                if (string.IsNullOrEmpty(_groupId))
+                {
+                    if (!string.IsNullOrEmpty(groupId) && groupId != "0")
+                    {
+                        _groupId = groupId;
+                    }
+                    else
+                    {
+                        // Fallback logic or error if no group ID is found
+                        _groupId = "18822804"; // Default fallback if needed, or handle error
+                    }
+                }
+                
                 _targetUserId = "24062011"; // المعرف المطلوب للبوت الكتابي
                 _isRunning = true;
                 
                 _client.Messaging.OnGroupMessage += HandleMessage;
                 
                 // إرسال رسالة البداية عند التشغيل
-                await _client.GroupMessage(_groupId, "!كتابه");
-                
-                Console.WriteLine($"✅ {Name} - قناة: {_groupId} - نوع: كتابة");
+                if (int.TryParse(_groupId, out _))
+                {
+                    await _client.GroupMessage(_groupId, "!كتابه");
+                    Console.WriteLine($"✅ {Name} - قناة: {_groupId} - نوع: كتابة");
+                }
+                else
+                {
+                     // Don't send if group ID is invalid (though JoinGroupAsync might catch this later)
+                     Console.WriteLine($"⚠️ {Name} - معرف المجموعة غير صالح: {_groupId}");
+                }
             }
             catch (Exception ex)
             {
@@ -114,11 +139,23 @@ namespace TelegramBotController
                     var extractedText = match.Groups[1].Value.Trim();
                     if (!string.IsNullOrEmpty(extractedText))
                     {
-                        // تم إلغاء الطباعة في الموجه بناءً على طلب المستخدم
-                        // Console.WriteLine($"📝 تم استخراج الكلمة: {extractedText}");
                         await _client.GroupMessage(_groupId, extractedText);
                         _playCount++;
                     }
+                }
+                // Support English Pattern: Type {now} 8 seconds from now to win!
+                else if (content.Contains("Type {") && content.Contains("} 8 seconds from now to win!"))
+                {
+                     var matchEn = Regex.Match(content, @"Type \{(.*?)\} 8 seconds from now to win!");
+                     if (matchEn.Success)
+                     {
+                         var extractedText = matchEn.Groups[1].Value.Trim();
+                         if (!string.IsNullOrEmpty(extractedText))
+                         {
+                             await _client.GroupMessage(_groupId, extractedText);
+                             _playCount++;
+                         }
+                     }
                 }
             }
             catch (Exception)
@@ -142,7 +179,15 @@ namespace TelegramBotController
             
             try
             {
-                await _client.Connection.DisconnectAsync();
+                 // محاولة تسجيل خروج نظامي قبل قطع الاتصال
+                 await _client.Emit(new Packet("private logout", null));
+                 await Task.Delay(500);
+            }
+            catch { }
+            
+            try 
+            {
+                 await _client.Connection.DisconnectAsync();
             }
             catch { }
             
