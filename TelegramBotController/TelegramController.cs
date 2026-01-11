@@ -10,6 +10,7 @@ using Telegram.Bot.Polling;
 using Telegram.Bot.Types;
 using Telegram.Bot.Types.Enums;
 using Telegram.Bot.Types.ReplyMarkups;
+using TelegramBotController.Services;
 
 namespace TelegramBotController
 {
@@ -335,6 +336,44 @@ namespace TelegramBotController
 
                     session.State = SessionState.WaitingForBotSelection;
                     await AskForBotSelection(chatId, session);
+                    break;
+
+                case SessionState.WaitingForHorseEmailList:
+                    session.TempEmail = message.Text;
+                    await _botClient.SendMessage(chatId, "🔐 أرسل كلمة المرور الموحدة:");
+                    session.State = SessionState.WaitingForHorsePassword;
+                    break;
+
+                case SessionState.WaitingForHorsePassword:
+                    var emails = session.TempEmail?.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries) ?? Array.Empty<string>();
+                    var horsePassword = message.Text.Trim();
+                    
+                    await _botClient.SendMessage(chatId, $"🐎 تم استلام {emails.Length} حساب.\nجاري بدء تفعيل الحصان في الخلفية...");
+                    
+                    _ = Task.Run(async () => {
+                         var activator = new HorseActivator();
+                         foreach (var email in emails)
+                         {
+                             var currentEmail = email.Trim();
+                             if (string.IsNullOrEmpty(currentEmail)) continue;
+                             
+                             try
+                             {
+                                 await _botClient.SendMessage(chatId, $"🔄 جاري العمل على: {currentEmail}");
+                                 string log = await activator.ActivateHorseAsync(currentEmail, horsePassword);
+                                 await _botClient.SendMessage(chatId, $"📄 تقرير {currentEmail}:\n{log}");
+                             }
+                             catch (Exception ex)
+                             {
+                                 await _botClient.SendMessage(chatId, $"❌ خطأ مع {currentEmail}: {ex.Message}");
+                             }
+                         }
+                         await _botClient.SendMessage(chatId, "✅ تم الانتهاء من جميع الحسابات في قائمة تفعيل الحصان.");
+                    });
+                    
+                    session.State = SessionState.Start;
+                    session.TempEmail = null;
+                    await ShowStartMenu(chatId);
                     break;
 
                 case SessionState.WaitingForBotSelection:
@@ -715,6 +754,11 @@ namespace TelegramBotController
             else if (data == "list_active")
             {
                 await ShowAccountsMenu(chatId);
+            }
+            else if (data == "horse_activation")
+            {
+                await _botClient.SendMessage(chatId, "📧 أرسل قائمة الإيميلات (كل إيميل في سطر):");
+                session.State = SessionState.WaitingForHorseEmailList;
             }
             else if (data == "bot_سباق")
             {
@@ -1169,6 +1213,10 @@ namespace TelegramBotController
                 },
                 new[]
                 {
+                    InlineKeyboardButton.WithCallbackData("🐎 تفعيل الحصان", "horse_activation")
+                },
+                new[]
+                {
                     InlineKeyboardButton.WithCallbackData("🚪 إغلاق نهائي", "final_close")
                 }
             });
@@ -1498,7 +1546,11 @@ namespace TelegramBotController
             WaitingForDeleteDelay,
             
             // Monitor Config
-            WaitingForMonitorGroupId
+            WaitingForMonitorGroupId,
+
+            // Horse Activation
+            WaitingForHorseEmailList,
+            WaitingForHorsePassword
         }
     }
 }
